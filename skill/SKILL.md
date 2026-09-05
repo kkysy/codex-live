@@ -1,13 +1,13 @@
 ---
-name: chatgpt-live
-description: 打开 CodexChat —— 本地仿 Codex 风格的 ChatGPT 实时聊天网页。当用户想和 ChatGPT 对话/聊天并实时看到过程、提到"实时聊天""聊天界面""伪codex""打开聊天窗口"，或想让 ZCode 把消息发给 ChatGPT 且让用户旁观时使用。也适用于用户直接说 /chatgpt-live。
+name: codex-live
+description: 打开 Codex Live —— 本地仿 Codex 风格的 ChatGPT 实时聊天网页。当用户想和 ChatGPT 对话/聊天并实时看到过程、提到"实时聊天""聊天界面""伪codex""打开聊天窗口"，或想让 ZCode 把消息发给 ChatGPT 且让用户旁观时使用。也适用于用户直接说 /codex-live。
 ---
 
-# CodexChat — ChatGPT 实时聊天桥
+# Codex Live — ChatGPT 实时聊天桥
 
-一个本地网页聊天界面（CodexChat 仓库，默认克隆到 `~/CodexChat`），通过 `codex app-server` 协议（桌面 App 同款账号与存储）与 ChatGPT 实时对话。浏览器经 SSE 实时显示流式回复、思考过程、联网搜索和命令执行。
+一个本地网页聊天界面（Codex Live 仓库，默认克隆到 `~/codex-live`），通过 `codex app-server` 协议（桌面 App 同款账号与存储）与 ChatGPT 实时对话。浏览器经 SSE 实时显示流式回复、思考过程、联网搜索和命令执行。
 
-> 下文以 `~/CodexChat` 为例；若克隆到其他目录，替换对应路径即可。
+> 下文以 `~/codex-live` 为例；若克隆到其他目录，替换对应路径即可。
 
 ## 何时做什么
 
@@ -17,8 +17,8 @@ description: 打开 CodexChat —— 本地仿 Codex 风格的 ChatGPT 实时聊
 # 1. 检查服务是否已在跑（有输出=已启动）
 curl -s -m 2 http://127.0.0.1:8765/api/state
 
-# 2. 没在跑就后台启动（工作目录必须在 CodexChat 目录）
-cd ~/CodexChat && (python -u server.py > server.log 2>&1 &)
+# 2. 没在跑就后台启动（工作目录必须在 Codex Live 目录）
+cd ~/codex-live && (python -u server.py > server.log 2>&1 &)
 
 # 3. 等待就绪（轮询直到返回 200，约 5-8 秒，app-server 启动需要时间）
 curl -s -m 2 http://127.0.0.1:8765/api/state
@@ -60,7 +60,7 @@ curl -s -X POST http://127.0.0.1:8765/api/new -H "Content-Type: application/json
 
 ## 注意事项
 
-- 服务常驻，聊天记录存在 `~/CodexChat/state.json`，重启服务自动续接同一线程；网页刷新通过 SSE snapshot 自动恢复。
+- 服务常驻，聊天记录存在 `~/codex-live/state.json`，重启服务自动续接同一线程；网页刷新通过 SSE snapshot 自动恢复。
 - **重启/停止服务必须用 `stop.bat`（只杀 server.py 自己的进程，按命令行匹配）。严禁 `Get-Process python | Stop-Process` 这类全量杀 python 的操作 —— 机器上可能还有 ComfyUI 等其他 python 服务。**
 - 若遇到 "already has an active writer"：是桌面 ChatGPT App 占用了线程锁，服务端已自动清锁重试，无需人工干预。
 - 端口从 8765 起自动顺延；若不是 8765，看 `server.log` 末尾的实际地址。

@@ -1,5 +1,5 @@
 @echo off
-rem CodexChat launcher: kill own old instances first (NEVER touches other python apps like ComfyUI),
+rem Codex Live launcher: kill own old instances first (NEVER touches other python apps like ComfyUI),
 rem then start one fresh server, wait until ready, open a NEW browser window.
 cd /d %~dp0
 
@@ -9,7 +9,7 @@ rem 1) sweep: stop every python whose command line is OUR server.py (matches by 
 powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name like 'python%%'\" | Where-Object { $_.CommandLine -match 'server\.py' -and $_.CommandLine -notmatch 'ComfyUI' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>nul
 
 rem 2) start fresh
-start "CodexChat" /min python -u server.py
+start "Codex Live" /min python -u server.py
 
 rem 3) poll until the port answers (max ~25s)
 set /a tries=0
@@ -32,4 +32,4 @@ if exist "C:\Program Files\Google\Chrome\Application\chrome.exe" (
 ) else (
   start "" "http://127.0.0.1:%PORT%"
 )
-echo CodexChat ready: http://127.0.0.1:%PORT%
+echo Codex Live ready: http://127.0.0.1:%PORT%

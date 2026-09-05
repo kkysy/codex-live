@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CodexChat — 本地 ChatGPT 实时聊天桥
+"""Codex Live — 本地 ChatGPT 实时聊天桥
 
 纯 Python 标准库实现：
   - HTTP 服务：托管 static/ 下的仿 Codex 界面
@@ -268,7 +268,7 @@ class Bridge:
             self._start_proc()
             self.initialized = False
         if not self.initialized:
-            self._rpc("initialize", {"clientInfo": {"name": "codexchat", "title": "CodexChat", "version": "1.1.0"},
+            self._rpc("initialize", {"clientInfo": {"name": "codex-live", "title": "Codex Live", "version": "1.1.0"},
                                      "capabilities": {"experimentalApi": True}})
             self.initialized = True
             if self.thread_id:
@@ -713,14 +713,14 @@ def main():
             print(f"[server] 端口 {port} 被占用，尝试 {port+1}")
             port += 1
     url = f"http://127.0.0.1:{port}"
-    (BASE / "codexchat.pid").write_text(str(os.getpid()), encoding="ascii")
-    print(f"[server] CodexChat 已启动: {url}  (PID {os.getpid()}, Ctrl+C 退出)")
+    (BASE / "codex-live.pid").write_text(str(os.getpid()), encoding="ascii")
+    print(f"[server] Codex Live 已启动: {url}  (PID {os.getpid()}, Ctrl+C 退出)")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        Path(BASE / "codexchat.pid").unlink(missing_ok=True)
+        Path(BASE / "codex-live.pid").unlink(missing_ok=True)
         if bridge.thread_id:
             lock = LOCKS / f"{bridge.thread_id}.lock"
             lock.unlink(missing_ok=True)

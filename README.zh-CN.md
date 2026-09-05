@@ -1,8 +1,8 @@
-# CodexChat
+# Codex Live
 
 仿 Codex 桌面风格的本地网页聊天界面，通过 `codex app-server` 协议（与 ChatGPT 桌面 App 同款账号、同款线程存储）与 ChatGPT 实时对话。
 
-<p align="center"><img src="screenshot/chat.jpg" alt="CodexChat 截图 —— 实时流式回复，含联网搜索与命令执行" width="780"></p>
+<p align="center"><img src="screenshot/chat.jpg" alt="Codex Live 截图 —— 实时流式回复，含联网搜索与命令执行" width="780"></p>
 
 [English](README.md) | 简体中文
 
@@ -52,7 +52,7 @@
 
 ## 配套 Agent Skill
 
-`skill/SKILL.md` 是一个可直接安装到 `~/.agents/skills/chatgpt-live/` 的 skill 示例，让 Agent 学会：拉起服务、发消息、读回复、开新会话、长任务挂起等待。安装后对 Agent 说"打开实时聊天"即可。
+`skill/SKILL.md` 是一个可直接安装到 `~/.agents/skills/codex-live/` 的 skill 示例，让 Agent 学会：拉起服务、发消息、读回复、开新会话、长任务挂起等待。安装后对 Agent 说"打开实时聊天"即可。
 
 ## 已知边界
 

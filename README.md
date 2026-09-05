@@ -1,8 +1,8 @@
-# CodexChat
+# Codex Live
 
 A local, Codex-style web UI for chatting with ChatGPT in real time, built on the `codex app-server` protocol — same account and same thread store as the ChatGPT desktop app.
 
-<p align="center"><img src="screenshot/chat.jpg" alt="CodexChat screenshot — live streaming with web search and command execution" width="780"></p>
+<p align="center"><img src="screenshot/chat.jpg" alt="Codex Live screenshot — live streaming with web search and command execution" width="780"></p>
 
 [English] | [简体中文](README.zh-CN.md)
 
@@ -52,7 +52,7 @@ You can also use it as a companion tool for coding agents (ZCode / Claude Code /
 
 ## Companion agent skill
 
-`skill/SKILL.md` is a ready-made skill you can install to `~/.agents/skills/chatgpt-live/` (path may vary by agent). It teaches the agent to start the service, send messages, read replies, open threads and wait for long turns efficiently. After installing, just tell your agent "open the live chat".
+`skill/SKILL.md` is a ready-made skill you can install to `~/.agents/skills/codex-live/` (path may vary by agent). It teaches the agent to start the service, send messages, read replies, open threads and wait for long turns efficiently. After installing, just tell your agent "open the live chat".
 
 ## Known limitations
 

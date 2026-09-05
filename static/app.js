@@ -381,17 +381,17 @@ async function refreshMeta() {
 /* ---------- 完成提醒（标签页在后台时改标题提示） ---------- */
 let titleTimer = null;
 function notifyTurnDone() {
-  if (!document.hidden) { document.title = "CodexChat"; return; }
+  if (!document.hidden) { document.title = "Codex Live"; return; }
   if (titleTimer) return;
   let on = false;
   titleTimer = setInterval(() => {
     on = !on;
-    document.title = on ? "✅ GPT 已回复 — CodexChat" : "CodexChat";
+    document.title = on ? "✅ GPT 已回复 — Codex Live" : "Codex Live";
   }, 1200);
   const restore = () => {
     clearInterval(titleTimer);
     titleTimer = null;
-    document.title = "CodexChat";
+    document.title = "Codex Live";
     document.removeEventListener("visibilitychange", restore);
   };
   document.addEventListener("visibilitychange", restore);

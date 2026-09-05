@@ -1,7 +1,7 @@
 # 运行时生成，不入库
 state.json
 server.log
-codexchat.pid
+codex-live.pid
 __pycache__/
 sse_debug*.txt
 sse_test.txt
