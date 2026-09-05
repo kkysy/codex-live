@@ -37,14 +37,15 @@ curl -s -X POST http://127.0.0.1:8765/api/send -H "Content-Type: application/jso
 
 **多轮协作场景**（用户说「你和 gpt 合作完成 XX，给 gpt XX 权限、用 XX 模型」）→ 按此流程：
 
-1. 开一个专属会话（可带项目、模型、权限），权限词映射：只读→`read-only`，工作区写入→`workspace-write`，完全访问→`danger-full-access`：
+1. 开一个专属会话（可带项目、模型、推理强度、权限），权限词映射：只读→`read-only`，工作区写入→`workspace-write`，完全访问→`danger-full-access`：
 
 ```bash
 curl -s -X POST http://127.0.0.1:8765/api/new -H "Content-Type: application/json" \
-  -d '{"project":"D:\\某项目", "model":"<codex 可用模型名>", "sandbox":"danger-full-access"}'
+  -d '{"project":"D:\\某项目", "model":"<codex 可用模型名>", "sandbox":"danger-full-access", "effort":"medium"}'
 ```
 
-   model 留空则用全局默认（`~/.codex/config.toml`）；sandbox 留空则同全局默认。有效模型名以 `codex` 配置为准。
+   model 留空则用全局默认（`~/.codex/config.toml`）；sandbox 留空则同全局默认。有效模型名以 `codex` 配置为准。`effort` 可选 `low/medium/high/xhigh`（经 thread/start 的 config 覆盖 `model_reasoning_effort` 实现），留空用全局默认。
+   注意：发 JSON 时建议用 python/文件方式构造 body——bash 单行 `-d` 里的反斜杠路径转义容易踩坑报 `bad json`。
 2. `POST /api/send` 把任务描述发给 GPT（第一条消息要写清任务全貌，GPT 没有我们的对话上下文）。
 3. 需要它的回复时 `GET /api/state` 读 `messages` 末尾的 assistant 内容，据此继续协作（它也会在网页上实时输出，用户可旁观）。
 4. 权限按最小够用原则：纯咨询用 read-only，要改项目文件用 workspace-write，仅按用户明确指示给 danger-full-access。

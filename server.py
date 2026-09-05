@@ -306,13 +306,15 @@ class Bridge:
         self._save_state()
         print("[bridge] 切换到线程", tid)
 
-    def _open_thread(self, project=None, model=None):
+    def _open_thread(self, project=None, model=None, effort=None):
         params = {"approvalPolicy": "never"}
         cwd = project
         if cwd:
             params["cwd"] = cwd
         if model:
             params["model"] = model
+        if effort:
+            params["config"] = {"model_reasoning_effort": effort}
         res = self._rpc("thread/start", params)
         th = res.get("thread") or {}
         tid = th.get("id") or res.get("threadId")
@@ -492,7 +494,7 @@ class Bridge:
             except Exception:
                 pass
 
-    def new_thread(self, project=None, model=None, sandbox=None):
+    def new_thread(self, project=None, model=None, sandbox=None, effort=None):
         with self.big_lock:
             if self.busy:
                 return False, "上一轮还在进行中，请先停止"
@@ -510,7 +512,7 @@ class Bridge:
                 if not mode:
                     return False, f"未知权限类型: {sandbox}（可用: read-only / workspace-write / danger-full-access）"
             self._ensure_proc()
-            self._open_thread(project, model)
+            self._open_thread(project, model, effort)
             if mode:
                 self._reg(self.thread_id)["sandbox"] = mode
                 self._save_state()
@@ -645,7 +647,7 @@ class Handler(BaseHTTPRequestHandler):
             bridge.stop()
             self._json({"ok": True})
         elif self.path == "/api/new":
-            ok, msg = bridge.new_thread(body.get("project"), body.get("model"), body.get("sandbox"))
+            ok, msg = bridge.new_thread(body.get("project"), body.get("model"), body.get("sandbox"), body.get("effort"))
             self._json({"ok": ok, "message": msg}, 200 if ok else 409)
         elif self.path == "/api/open":
             ok, msg = bridge.open_thread(body.get("threadId"))
