@@ -374,6 +374,18 @@ pre.code code { font-family: Consolas, "Courier New", monospace; font-size: 13px
 .body pre.code code { background: transparent; padding: 0; }
 .body a { color: var(--accent); }
 .body hr { border: 0; border-top: 1px solid var(--border); margin: 1em 0; }
+/* KaTeX 数学公式 */
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 0;
+  margin: 0.6em 0;
+}
+.body .katex { font-size: 1.05em; }
+.math-fallback {
+  font-family: Consolas, "Courier New", monospace;
+  color: var(--gold, #c9a227);
+}
 
 .err {
   margin: 14px 0;

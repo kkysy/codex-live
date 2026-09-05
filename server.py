@@ -604,8 +604,27 @@ class Handler(BaseHTTPRequestHandler):
             self._file(STATIC / "app.js", "text/javascript")
         elif path == "/markdown.js":
             self._file(STATIC / "markdown.js", "text/javascript")
+        elif path.startswith("/katex/"):
+            self._katex_file(path)
         else:
             self.send_error(404)
+
+    KATEX_TYPES = {
+        ".js": "text/javascript",
+        ".css": "text/css",
+        ".woff2": "font/woff2",
+        ".woff": "font/woff",
+        ".ttf": "font/ttf",
+    }
+
+    def _katex_file(self, path):
+        # 仅允许 /katex/ 下的静态资源（js/css/字体），resolve 后校验防路径穿越
+        rel = Path(path[len("/katex/"):])
+        target = (STATIC / "katex" / rel).resolve()
+        root = (STATIC / "katex").resolve()
+        if root not in target.parents or target.suffix.lower() not in self.KATEX_TYPES:
+            return self.send_error(404)
+        self._file(target, self.KATEX_TYPES[target.suffix.lower()])
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
