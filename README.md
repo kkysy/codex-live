@@ -1,56 +1,61 @@
-# CodexChat — 本地 ChatGPT 实时聊天桥
+# CodexChat
 
-仿 Codex 桌面风格的本地网页聊天界面，通过 `codex app-server` 协议（与 ChatGPT 桌面 App 同款账号、同款线程存储）与 ChatGPT 实时对话。
+A local, Codex-style web UI for chatting with ChatGPT in real time, built on the `codex app-server` protocol — same account and same thread store as the ChatGPT desktop app.
+
+<p align="center"><img src="screenshot/chat.jpg" alt="CodexChat screenshot — live streaming with web search and command execution" width="780"></p>
+
+[English] | [简体中文](README.zh-CN.md)
+
+## How it works
 
 ```
-浏览器 (static/)          server.py                codex app-server
-┌─────────────┐   GET /   ┌──────────────┐   stdio   ┌────────────┐
-│  界面+渲染   │ ◄──SSE────│ HTTP+SSE 服务 │ ◄─JSONL── │  (codex CLI │
-│  markdown   │           │  状态/历史    │  JSON-RPC │  ChatGPT账号)│
-└─────────────┘  POST /api/send └──────►──────────────────► GPT 模型
+┌───────────────────┐ GET /  -  /api/events (SSE) ┌───────────────────┐ initialize / turn/start    ┌───────────────────┐
+│      Browser      │ <-------------------------->│     server.py     │ <------------------------->│  codex app-server │
+│     (static/)     │ POST /api/send - /api/stop  │     HTTP + SSE    │ JSON-RPC over stdio        │ (ChatGPT account) │
+└───────────────────┘                             └───────────────────┘                            └───────────────────┘
 ```
 
-- **实时**：Server-Sent Events 推流，回复逐字显示，含 💭 思考过程、🔎 联网搜索、⚙ 命令执行。
-- **同账号**：复用 `~/.codex/` 下的 ChatGPT 登录态，会话线程写入 Codex 的线程数据库（桌面 App 数据库同源；App 运行期不重读外部写入，需重启 App 才能看到）。
-- **纯标准库**：server.py 只用 Python 标准库，零第三方依赖。
-- **无 CDN**：界面与 Markdown 渲染全部本地文件，离线可用。
+- **Real-time**: replies stream token-by-token over Server-Sent Events, including 💭 reasoning, 🔎 web searches and ⚙ command executions, at the exact position they happen.
+- **Same account**: reuses the ChatGPT login in `~/.codex/`; threads are written to Codex's own thread database (shared with the desktop app; the app only reads it at startup, so restart it to see new threads).
+- **Zero dependencies**: `server.py` is pure Python standard library.
+- **No CDN**: the UI and Markdown rendering are all local files — works offline.
 
-## 环境要求
+## Requirements
 
-- Windows（其他平台未测试，理论可用：把 start.bat 换成 `python server.py` 即可）
+- Windows (other platforms are untested but should work — just replace `start.bat` with `python server.py`)
 - Python 3.10+
-- 已登录的 [Codex CLI](https://developers.openai.com/codex/cli/)（`codex app-server` 需在 PATH 或 `~/codex-bin/codex.exe`，可用环境变量 `CODEX_BIN` 指定）
+- A logged-in [Codex CLI](https://developers.openai.com/codex/cli/). `codex app-server` must be reachable at `~/codex-bin/codex.exe` or on PATH; override with the `CODEX_BIN` environment variable.
 
-## 使用
+## Usage
 
-- 双击 `start.bat`，或 `python server.py` 后打开 `http://127.0.0.1:8765`。
-- 端口被占用自动 +1，实际地址看启动输出或 `server.log`。
-- 聊天记录存 `state.json`，重启服务自动续接同一线程；页面刷新通过 SSE snapshot 恢复。
-- 停止服务用 `stop.bat`（只杀本项目的 server.py 进程）。
+- Run `start.bat` (or `python server.py`), then open `http://127.0.0.1:8765`.
+- If the port is taken the server auto-increments; check the startup output or `server.log`.
+- Chat history is stored in `state.json` and survives restarts; refreshing the page restores everything via the SSE snapshot.
+- Stop with `stop.bat` (kills only this project's `server.py` process).
 
-也可以作为 Agent（如 ZCode / Claude Code）的配套工具：Agent 通过 `POST /api/send` 直接向会话发消息，用户在网页旁观实时输出。参考 `skill/` 目录下的示例 skill。
+You can also use it as a companion tool for coding agents (ZCode / Claude Code / ...): the agent posts messages via `POST /api/send` while you watch the reply stream live in the browser. See the example skill in `skill/`.
 
 ## API
 
-| 端点 | 方法 | 说明 |
+| Endpoint | Method | Description |
 |---|---|---|
-| `/api/state` | GET | 当前线程 + 全部消息 + 项目/会话列表（JSON） |
-| `/api/events` | GET (SSE) | 实时事件流；连接即推 snapshot |
-| `/api/send` | POST `{text}` | 发送消息（409 = 上一轮进行中） |
-| `/api/last_text` | GET | 轻量监控：只返回最后一条 assistant 正文 + 工具调用计数（供 Agent 低 token 轮询） |
-| `/api/wait_turn` | GET `?timeout=1800` | 长轮询，阻塞到当前轮完成或超时（供 Agent 挂起等待而非盲轮询） |
-| `/api/new` | POST `{project?, model?, sandbox?}` | 新会话；sandbox: read-only / workspace-write / danger-full-access（支持中文别名） |
-| `/api/open` | POST `{threadId}` | 切换到指定历史会话 |
-| `/api/delete` | POST `{threadId}` | 删除会话 |
-| `/api/projects` | POST `{path}` | 手动添加项目文件夹 |
-| `/api/stop` | POST | 中断当前回合 |
+| `/api/state` | GET | Current thread + full message history + project/thread lists (JSON) |
+| `/api/events` | GET (SSE) | Live event stream; a snapshot is pushed on connect |
+| `/api/send` | POST `{text}` | Send a message (409 = previous turn still running) |
+| `/api/last_text` | GET | Lightweight monitoring: last assistant text + tool-call counts only (for low-token agent polling) |
+| `/api/wait_turn` | GET `?timeout=1800` | Long-poll until the current turn finishes or times out (lets agents block instead of poll) |
+| `/api/new` | POST `{project?, model?, sandbox?}` | New thread; sandbox: `read-only` / `workspace-write` / `danger-full-access` |
+| `/api/open` | POST `{threadId}` | Switch to a stored thread |
+| `/api/delete` | POST `{threadId}` | Delete a thread |
+| `/api/projects` | POST `{path}` | Register a project folder |
+| `/api/stop` | POST | Interrupt the current turn |
 
-## 配套 Agent Skill
+## Companion agent skill
 
-`skill/SKILL.md` 是一个可直接安装到 `~/.agents/skills/chatgpt-live/` 的 skill 示例，让 Agent 学会：拉起服务、发消息、读回复、开新会话、长任务挂起等待。安装后对 Agent 说"打开实时聊天"即可。
+`skill/SKILL.md` is a ready-made skill you can install to `~/.agents/skills/chatgpt-live/` (path may vary by agent). It teaches the agent to start the service, send messages, read replies, open threads and wait for long turns efficiently. After installing, just tell your agent "open the live chat".
 
-## 已知边界
+## Known limitations
 
-- 桌面 ChatGPT App 运行时会对最近活跃线程加「活动写入者」锁；服务端遇 "active writer" 错误会自动删锁重试。
-- App 内查看本会话需重启 App（它只在启动时读线程库）。
-- 服务只绑定 `127.0.0.1`，不对局域网开放。
+- While the ChatGPT desktop app is running it holds a "writer lock" on recently active threads; the server detects the "active writer" error and clears the lock automatically.
+- Threads created here only appear inside the desktop app after it restarts (it reads the thread database at startup only).
+- The server binds to `127.0.0.1` only — it is not reachable from the LAN.
