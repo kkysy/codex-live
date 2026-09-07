@@ -104,8 +104,26 @@ class Bridge:
                 self.projects = d.get("projects", [])
                 for r in self.threads.values():
                     r["messages"] = [self._migrate_msg(m) for m in r.get("messages", [])]
+                self._reorder_errors()
             except Exception as e:
                 print("[state] 读取失败:", e)
+
+    def _reorder_errors(self):
+        """一次性自愈：旧版本把 error 条目 append 到同轮 assistant 消息之后（沉底），
+        加载历史时把这类 error 挪回其 turnId 对应 assistant 消息之前（消息1-报错-消息2）。幂等。"""
+        for r in self.threads.values():
+            msgs = r.get("messages", [])
+            i = 0
+            while i < len(msgs):
+                m = msgs[i]
+                if m.get("role") == "error" and m.get("turnId"):
+                    j = next((k for k in range(len(msgs))
+                              if msgs[k].get("role") == "assistant" and msgs[k].get("id") == m.get("turnId")), None)
+                    if j is not None and j < i:  # 错误排在回复之后 = 沉底，挪回回复前
+                        msgs.insert(j, msgs.pop(i))
+                        continue
+                i += 1
+            r["messages"] = msgs
 
     @staticmethod
     def _migrate_msg(m):
@@ -392,7 +410,17 @@ class Bridge:
              "additionalDetails": err.get("additionalDetails"),
              "willRetry": bool(payload.get("willRetry")),
              "turnId": turn_id, "resolved": False, "raw": payload}
-        hist.append(m)
+        if turn_id:
+            # 插到同轮 assistant 消息之前：断线/重连发生在该轮产出过程中，用户视角是
+            # 「消息1 - 报错 - 消息2」，而不是沉到整条回复下方（刷新后顺序同样正确）
+            for i, x in enumerate(hist):
+                if x.get("id") == turn_id and x.get("role") == "assistant" and x.get("streaming"):
+                    hist.insert(i, m)
+                    break
+            else:
+                hist.append(m)
+        else:
+            hist.append(m)
         reg["updated"] = time.time()
         self._save_state()
         self.emit({"type": "item", "item": self._public(m)})

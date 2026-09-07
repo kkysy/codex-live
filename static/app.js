@@ -87,7 +87,12 @@ function renderMsg(m) {
     hideHero();
     node = el("div", `msg ${m.role}`);
     m._node = node;
-    messagesEl.appendChild(node);
+    // 错误属于其 turnId 那轮的「尝试边界」：若该轮 assistant 消息已在渲染（流式中途断线），
+    // 把错误节点插到它前面 —— 消息1 - 报错 - 消息2，而不是 append 到末尾沉底
+    const anchor = (m.role === "error" && m.turnId) ? state.items.get(m.turnId) : null;
+    const ref = anchor && anchor._node;
+    if (ref && ref.parentNode) ref.parentNode.insertBefore(node, ref);
+    else messagesEl.appendChild(node);
   }
   if (m.role === "user") {
     node.innerHTML = "";
