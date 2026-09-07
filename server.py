@@ -82,6 +82,7 @@ class Bridge:
         self.busy = False
         self.clients = []          # SSE 订阅队列
         self.big_lock = threading.Lock()
+        self.err_seq = 0
         self.sandbox = read_sandbox_from_config()
         # state: {current, threads:{tid:{title,project,cwd,model,effort,messages,updated}}, projects:[..]}
         self.threads = {}
@@ -158,12 +159,23 @@ class Bridge:
 
     def last_text(self):
         """轻量监控端点：只返回最后一条 assistant 消息的正文 text 段，
-        命令/思考段只给计数不给内容（命令文本单轮可达 3 万字符，全量拉取浪费 token）。"""
+        命令/思考段只给计数不给内容（命令文本单轮可达 3 万字符，全量拉取浪费 token）。
+        另附错误概览：last_error 非空 = 有未恢复的错误（结合 busy 判断在重连还是已死）。"""
         reg = self._reg(self.thread_id) if self.thread_id else {}
-        assistants = [m for m in reg.get("messages", []) if m.get("role") == "assistant"]
+        messages = reg.get("messages", [])
+        assistants = [m for m in messages if m.get("role") == "assistant"]
+        errors = [m for m in messages if m.get("role") == "error"]
+        unresolved = [m for m in errors if not m.get("resolved")]
+        last_err = unresolved[-1] if unresolved else None
+        err_info = {
+            "n_errors": len(errors),
+            "unresolved_errors": len(unresolved),
+            "last_error": self._public(last_err) if last_err else None,
+        }
         if not assistants:
             return {"ok": True, "text": "", "n_commands": 0, "n_thoughts": 0,
-                    "streaming": False, "busy": self.busy, "threadId": self.thread_id}
+                    "streaming": False, "busy": self.busy, "threadId": self.thread_id,
+                    **err_info}
         m = self._migrate_msg(assistants[-1])
         parts = m.get("parts", [])
         return {
@@ -174,6 +186,7 @@ class Bridge:
             "streaming": bool(m.get("streaming")),
             "busy": self.busy,
             "threadId": self.thread_id,
+            **err_info,
         }
 
     def snapshot(self):
@@ -345,6 +358,67 @@ class Bridge:
             self.emit({"type": "item", "item": self._public(m)})
         return m
 
+    def _error_item(self, payload, tid=None):
+        """把 error 通知/异常落成时间线条目（role=error），严格按到达顺序插进历史：
+        重连类错误（Reconnecting 1/5 → 2/5 …）按 turnId 合并成一条实时更新，
+        这样断线重连不会刷出一屏报错，agent 在 /api/state、/api/last_text 也能看到错误。
+        致命错误（willRetry=False 且带 turnId）同时清 busy，让 wait_turn 能返回，避免误判为"还在跑"。"""
+        tid = tid or self.thread_id
+        if not tid:
+            self.emit({"type": "error", "message": str(payload)})
+            return None
+        reg = self._reg(tid)
+        err = payload.get("error") or {}
+        message = err.get("message") or payload.get("message") or str(payload)
+        turn_id = payload.get("turnId")
+        hist = reg.setdefault("messages", [])
+        if turn_id:
+            for m in reversed(hist):
+                if m.get("role") == "error" and m.get("turnId") == turn_id:
+                    m.update({
+                        "message": message,
+                        "additionalDetails": err.get("additionalDetails") or m.get("additionalDetails"),
+                        "willRetry": bool(payload.get("willRetry", m.get("willRetry"))),
+                        "raw": payload,
+                        "ts": now_s(),
+                    })
+                    reg["updated"] = time.time()
+                    self._save_state()
+                    self.emit({"type": "item", "item": self._public(m)})
+                    return m
+        self.err_seq += 1
+        m = {"id": f"e{int(time.time()*1000)}-{self.err_seq}", "role": "error", "streaming": False,
+             "ts": now_s(), "message": message,
+             "additionalDetails": err.get("additionalDetails"),
+             "willRetry": bool(payload.get("willRetry")),
+             "turnId": turn_id, "resolved": False, "raw": payload}
+        hist.append(m)
+        reg["updated"] = time.time()
+        self._save_state()
+        self.emit({"type": "item", "item": self._public(m)})
+        if payload.get("willRetry") is False and payload.get("turnId"):
+            # 带 turnId 且明确不重试 = 本轮已死，别再让调用方空等
+            self.busy = False
+            self.emit({"type": "status", "busy": False})
+        return m
+
+    def _resolve_errors(self, p):
+        """本轮正常收尾（turn/completed）时，把对应 error 条目标记为已恢复：
+        重连成功、重试后完成的不再算"未解决"；真正失败/卡住的轮次不会走到这里。"""
+        turn_obj = p.get("turn") or {}
+        turn_id = turn_obj.get("id") or p.get("turnId")
+        changed = False
+        for m in self._hist():
+            if m.get("role") != "error" or m.get("resolved"):
+                continue
+            if turn_id and m.get("turnId") and m.get("turnId") != turn_id:
+                continue
+            m["resolved"] = True
+            changed = True
+            self.emit({"type": "item", "item": self._public(m)})
+        if changed:
+            self._save_state()
+
     def _on_notification(self, method, p):
         if method == "thread/started":
             th = p.get("thread", {})
@@ -414,6 +488,7 @@ class Bridge:
                         self.emit({"type": "remove", "id": m["id"]})
                     else:
                         self.emit({"type": "item", "item": self._public(m)})
+            self._resolve_errors(p)
             self._reg(self.thread_id)["updated"] = time.time()
             self._save_state()
             self.emit({"type": "turn_completed",
@@ -421,11 +496,15 @@ class Bridge:
                                  "output": u.get("outputTokens", u.get("output_tokens"))}})
             self.emit({"type": "status", "busy": False})
         elif method == "error":
-            self.emit({"type": "error", "message": str(p)})
+            self._error_item(p)
 
     def _public(self, m):
         if m.get("role") == "user":
             return {k: m.get(k) for k in ("id", "role", "text", "streaming", "ts")}
+        if m.get("role") == "error":
+            return {k: m.get(k) for k in ("id", "role", "message", "additionalDetails",
+                                          "willRetry", "turnId", "resolved", "raw",
+                                          "streaming", "ts")}
         self._migrate_msg(m)
         return {k: m.get(k) for k in ("id", "role", "parts", "streaming", "ts")}
 
@@ -480,11 +559,11 @@ class Bridge:
                 except RuntimeError as e2:
                     msg = str(e2)
             self.busy = False
-            self.emit({"type": "error", "message": msg})
+            self._error_item({"error": {"message": msg}})
             self.emit({"type": "status", "busy": False})
         except Exception as e:
             self.busy = False
-            self.emit({"type": "error", "message": str(e)})
+            self._error_item({"error": {"message": str(e)}})
             self.emit({"type": "status", "busy": False})
 
     def stop(self):

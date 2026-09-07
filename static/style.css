@@ -396,6 +396,19 @@ pre.code code { font-family: Consolas, "Courier New", monospace; font-size: 13px
   color: #c0564e;
   font-size: 13.5px;
 }
+.msg.error .err { margin: 0; }
+.err-head { font-weight: 600; }
+.err-detail {
+  margin-top: 4px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.err-ts { margin-top: 4px; font-size: 11px; color: var(--muted); text-align: right; }
+.err.resolved { opacity: 0.55; }
+.err.resolved .err-head { font-weight: 500; }
 .notice {
   margin: 8px 0;
   font-size: 12.5px;

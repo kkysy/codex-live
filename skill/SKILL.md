@@ -51,13 +51,16 @@ curl -s -X POST http://127.0.0.1:8765/api/new -H "Content-Type: application/json
 4. 权限按最小够用原则：纯咨询用 read-only，要改项目文件用 workspace-write，仅按用户明确指示给 danger-full-access。
 
 **Agent 低成本监控（省 token）**：
-- `GET /api/last_text` — 只返回最后一条 assistant 消息的**正文 text 段** + 命令/思考段计数。勿用 `/api/state` 做轮询：其 parts 含全部命令调用文本（单轮可达 3 万字符），全量拉取浪费 token。
+- `GET /api/last_text` — 只返回最后一条 assistant 消息的**正文 text 段** + 命令/思考段计数 + 错误概览（`n_errors` / `unresolved_errors` / `last_error`）。勿用 `/api/state` 做轮询：其 parts 含全部命令调用文本（单轮可达 3 万字符），全量拉取浪费 token。
+- **判断"在跑还是卡了"**：`last_error` 非空 = 有未恢复的错误。结合 `busy`：busy=True 且 last_error 非空 → 断线重连中；busy=False 且 last_error 非空 → 本轮已失败/卡死（`willRetry:false`）；重连成功后该错误会被标记 `resolved:true` 并移出 last_error。
 - `GET /api/wait_turn?timeout=1800` — 长轮询，阻塞到当前轮完成（busy True→False）或超时才返回。用法：`POST /api/send` 后以后台 Bash（run_in_background）挂起 `curl --max-time <timeout+60>` 调它，完成即收到任务通知，替代盲目轮询。
 - 长任务的进度细节：让执行者维护 STATUS.md（磁盘文件），Agent 读它而不是读消息流。
 
+**报错可见性**：断线重连、turn/start 失败等错误会以 `role:"error"` 条目插入消息时间线（网页上按真实位置显示、可刷新恢复，不再沉底），并持久化进 `state.json`。`GET /api/state` 的 `messages` 里同样能看到，字段：`message` / `additionalDetails` / `willRetry` / `turnId` / `resolved` / `raw`。`resolved:true` = 该轮已正常收尾（重连成功）；同一次重连的多条进度（Reconnecting 1/5 → 2/5）合并为一条实时更新。
+
 **用户想开新话题** → `curl -X POST http://127.0.0.1:8765/api/new`（网页上点「新对话」等效；加 `{"project":"路径"}` 可在项目内建）。
 
-**用户想让 Agent 知道 ChatGPT 说了什么** → `curl -s http://127.0.0.1:8765/api/state`，`messages` 数组含全部历史（role: user/assistant）。
+**用户想让 Agent 知道 ChatGPT 说了什么** → `curl -s http://127.0.0.1:8765/api/state`，`messages` 数组含全部历史（role: user/assistant/error）。
 
 ## 注意事项
 

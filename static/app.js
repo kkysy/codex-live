@@ -66,6 +66,21 @@ function partsOf(m) {
   return ps;
 }
 
+function errorNode(m) {
+  // 时间线条目（role=error）与客户端错误兜底共用；resolved = 该轮已正常收尾（重连成功）
+  const box = el("div", "err");
+  if (m.resolved) box.classList.add("resolved");
+  const prefix = m.resolved ? "✓ " : (m.willRetry ? "⟳ " : "⚠ ");
+  box.appendChild(el("div", "err-head", escapeText(prefix + (m.message || "未知错误"))));
+  if (m.additionalDetails) {
+    const d = el("div", "err-detail");
+    d.textContent = m.additionalDetails;
+    box.appendChild(d);
+  }
+  if (m.ts) box.appendChild(el("div", "err-ts", "· " + escapeText(m.ts)));
+  return box;
+}
+
 function renderMsg(m) {
   let node = m._node;
   if (!node) {
@@ -78,6 +93,11 @@ function renderMsg(m) {
     node.innerHTML = "";
     node.appendChild(el("div", "bubble"));
     node.firstChild.textContent = m.text;
+    return node;
+  }
+  if (m.role === "error") {
+    node.innerHTML = "";
+    node.appendChild(errorNode(m));
     return node;
   }
   node.classList.toggle("streaming", !!m.streaming);
@@ -351,10 +371,9 @@ function handle(ev) {
       break;
     }
     case "error": {
+      // 客户端侧错误兜底（如发送失败）；服务端错误已作为 role=error 时间线条目进入正常渲染
       hideHero();
-      const n = el("div", "err");
-      n.textContent = "⚠ " + (ev.message || "未知错误");
-      messagesEl.appendChild(n);
+      messagesEl.appendChild(errorNode({ message: ev.message }));
       maybeScroll();
       break;
     }
