@@ -83,6 +83,8 @@ class Bridge:
         self.clients = []          # SSE 订阅队列
         self.big_lock = threading.Lock()
         self.err_seq = 0
+        self.cont_seq = 0
+        self.split_map = {}   # turnId -> 断线续接消息（错误之后的"后半段"）
         self.sandbox = read_sandbox_from_config()
         # state: {current, threads:{tid:{title,project,cwd,model,effort,messages,updated}}, projects:[..]}
         self.threads = {}
@@ -109,21 +111,27 @@ class Bridge:
                 print("[state] 读取失败:", e)
 
     def _reorder_errors(self):
-        """一次性自愈：旧版本把 error 条目 append 到同轮 assistant 消息之后（沉底），
-        加载历史时把这类 error 挪回其 turnId 对应 assistant 消息之前（消息1-报错-消息2）。幂等。"""
+        """一次性自愈：旧版本把 error 条目放在同轮 assistant 消息之前，或与后续消息交错。
+        断线实际发生在回复流式过程中，错误应紧跟同轮回复之后（历史数据无法重建精确切分点，
+        新数据由 _error_item 的 split 逻辑保证精确位置）。重建式排序：每条 error 移到
+        其 turnId 对应 assistant 消息之后；找不到对应回复则保持原位置。幂等。"""
         for r in self.threads.values():
-            msgs = r.get("messages", [])
-            i = 0
-            while i < len(msgs):
-                m = msgs[i]
+            src = r.get("messages", [])
+            out = []
+            for m in src:
                 if m.get("role") == "error" and m.get("turnId"):
-                    j = next((k for k in range(len(msgs))
-                              if msgs[k].get("role") == "assistant" and msgs[k].get("id") == m.get("turnId")), None)
-                    if j is not None and j < i:  # 错误排在回复之后 = 沉底，挪回回复前
-                        msgs.insert(j, msgs.pop(i))
-                        continue
-                i += 1
-            r["messages"] = msgs
+                    pos = None
+                    for k in range(len(out) - 1, -1, -1):
+                        if out[k].get("role") == "assistant" and out[k].get("id") == m.get("turnId"):
+                            pos = k
+                            break
+                    if pos is None:
+                        out.append(m)
+                    else:
+                        out.insert(pos + 1, m)
+                else:
+                    out.append(m)
+            r["messages"] = out
 
     @staticmethod
     def _migrate_msg(m):
@@ -366,12 +374,27 @@ class Bridge:
     def _turn_msg(self, turn_id, emit=True):
         """一轮回复聚合成一条消息（delta 与 item 的 itemId 可能不同，以 turnId 为键）。
         内容按到达顺序存入 parts（text/thought/search/command），保证工具调用出现在真实位置。
+        断线被错误切开时（split），前半段已收尾，后续内容进独立的续接消息（id 带 -c 后缀），
+        排在错误之后，使错误落在其真实发生的位置。
         emit=False 用于占位：空消息不推给前端，避免留下空的闪烁光标节点"""
-        for m in self._hist():
+        hist = self._hist()
+        cont = self.split_map.get(turn_id)
+        if cont is not None:
+            return cont
+        for m in hist:
             if m.get("id") == turn_id:
+                if m.get("split"):
+                    self.cont_seq += 1
+                    cont = {"id": f"{turn_id}-c{self.cont_seq}", "role": "assistant",
+                            "parts": [], "streaming": True, "ts": now_s(), "cont": True}
+                    hist.append(cont)
+                    self.split_map[turn_id] = cont
+                    if emit:
+                        self.emit({"type": "item", "item": self._public(cont)})
+                    return cont
                 return m
         m = {"id": turn_id, "role": "assistant", "parts": [], "streaming": True, "ts": now_s()}
-        self._hist().append(m)
+        hist.append(m)
         if emit:
             self.emit({"type": "item", "item": self._public(m)})
         return m
@@ -411,14 +434,22 @@ class Bridge:
              "willRetry": bool(payload.get("willRetry")),
              "turnId": turn_id, "resolved": False, "raw": payload}
         if turn_id:
-            # 插到同轮 assistant 消息之前：断线/重连发生在该轮产出过程中，用户视角是
-            # 「消息1 - 报错 - 消息2」，而不是沉到整条回复下方（刷新后顺序同样正确）
+            # 断线发生在该轮流式过程中：把已流出的内容收尾成"前半段"，错误插在其后，
+            # 之后的内容进续接消息 —— 错误落在真实发生的位置（消息1 - 前半段 - 报错 - 后半段），
+            # 而不是夹在用户消息和整条回复之间，也不是沉在回复之后。
             for i, x in enumerate(hist):
                 if x.get("id") == turn_id and x.get("role") == "assistant" and x.get("streaming"):
-                    hist.insert(i, m)
+                    if not any((pp.get("text") or pp.get("query")) for pp in x.get("parts", [])):
+                        hist.pop(i)          # 前半段无内容：直接丢弃空壳，错误紧贴用户消息
+                        hist.insert(i, m)
+                    else:
+                        x["streaming"] = False
+                        x["split"] = True
+                        hist.insert(i + 1, m)
+                        self.emit({"type": "item", "item": self._public(x)})
                     break
             else:
-                hist.append(m)
+                hist.append(m)               # 回复已完成或尚未开始：错误排在其后
         else:
             hist.append(m)
         reg["updated"] = time.time()
@@ -483,9 +514,10 @@ class Bridge:
             m = self._turn_msg(p.get("turnId") or item.get("id"), emit=False)
             if it in ("agentMessage", "agent_message"):
                 # delta 已按序积累正文；仅在完全没收到 delta 时用整段文本兜底
+                # （续接消息除外：它只该有后半段内容，整段文本会与前半段重复）
                 joined = "".join(pp["text"] for pp in m["parts"] if pp["type"] == "text")
                 full = item.get("text", "")
-                if full and not joined:
+                if full and not joined and not m.get("cont"):
                     m["parts"].insert(0, {"type": "text", "text": full})
                 m["streaming"] = False
                 self.emit({"type": "item", "item": self._public(m)})
@@ -516,6 +548,8 @@ class Bridge:
                         self.emit({"type": "remove", "id": m["id"]})
                     else:
                         self.emit({"type": "item", "item": self._public(m)})
+            turn_obj = p.get("turn") or {}
+            self.split_map.pop(turn_obj.get("id") or p.get("turnId"), None)
             self._resolve_errors(p)
             self._reg(self.thread_id)["updated"] = time.time()
             self._save_state()

@@ -87,12 +87,9 @@ function renderMsg(m) {
     hideHero();
     node = el("div", `msg ${m.role}`);
     m._node = node;
-    // 错误属于其 turnId 那轮的「尝试边界」：若该轮 assistant 消息已在渲染（流式中途断线），
-    // 把错误节点插到它前面 —— 消息1 - 报错 - 消息2，而不是 append 到末尾沉底
-    const anchor = (m.role === "error" && m.turnId) ? state.items.get(m.turnId) : null;
-    const ref = anchor && anchor._node;
-    if (ref && ref.parentNode) ref.parentNode.insertBefore(node, ref);
-    else messagesEl.appendChild(node);
+    // 顺序完全由服务端历史决定（SSE 按序送达即 append 即正确）：
+    // 断线错误会落在同轮回复内容之后/之间，而不是夹在用户消息与回复之间
+    messagesEl.appendChild(node);
   }
   if (m.role === "user") {
     node.innerHTML = "";
