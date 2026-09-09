@@ -426,6 +426,7 @@ class Bridge:
                     reg["updated"] = time.time()
                     self._save_state()
                     self.emit({"type": "item", "item": self._public(m)})
+                    self._maybe_fail_turn(payload)
                     return m
         self.err_seq += 1
         m = {"id": f"e{int(time.time()*1000)}-{self.err_seq}", "role": "error", "streaming": False,
@@ -455,11 +456,29 @@ class Bridge:
         reg["updated"] = time.time()
         self._save_state()
         self.emit({"type": "item", "item": self._public(m)})
-        if payload.get("willRetry") is False and payload.get("turnId"):
-            # 带 turnId 且明确不重试 = 本轮已死，别再让调用方空等
-            self.busy = False
-            self.emit({"type": "status", "busy": False})
+        self._maybe_fail_turn(payload)
         return m
+
+    def _maybe_fail_turn(self, payload):
+        """带 turnId 且明确不重试 = 本轮已死。合并进已有 error 条目时也必须走这里，
+        否则 Reconnecting 1/5→5/5 的 willRetry:false 会被提前 return 漏掉，busy 卡死。"""
+        if payload.get("willRetry") is False and payload.get("turnId"):
+            self._finish_failed_turn(payload.get("turnId"))
+
+    def _finish_failed_turn(self, turn_id=None):
+        """清 busy、收尾仍在流式的消息，让 wait_turn 返回、下一轮 send 能发出。"""
+        if self.thread_id:
+            for m in self._hist():
+                if m.get("streaming"):
+                    m["streaming"] = False
+                    self.emit({"type": "item", "item": self._public(m)})
+            if turn_id:
+                self.split_map.pop(turn_id, None)
+            else:
+                self.split_map.clear()
+            self._save_state()
+        self.busy = False
+        self.emit({"type": "status", "busy": False})
 
     def _resolve_errors(self, p):
         """本轮正常收尾（turn/completed）时，把对应 error 条目标记为已恢复：
@@ -634,6 +653,10 @@ class Bridge:
                 self._rpc("turn/interrupt", {"threadId": self.thread_id}, timeout=10)
             except Exception:
                 pass
+        # interrupt 本身不会清 busy；五次重连失败后若协议没发 willRetry:false，
+        # 也要让调用方能手动解开「上一轮还在进行中」
+        if self.busy:
+            self._finish_failed_turn()
 
     def new_thread(self, project=None, model=None, sandbox=None, effort=None):
         with self.big_lock:
