@@ -409,6 +409,7 @@ pre.code code { font-family: Consolas, "Courier New", monospace; font-size: 13px
 .err-ts { margin-top: 4px; font-size: 11px; color: var(--muted); text-align: right; }
 .err.resolved { opacity: 0.55; }
 .err.resolved .err-head { font-weight: 500; }
+.err.part { margin: 8px 0; }
 .notice {
   margin: 8px 0;
   font-size: 12.5px;

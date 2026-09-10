@@ -51,12 +51,12 @@ curl -s -X POST http://127.0.0.1:8765/api/new -H "Content-Type: application/json
 4. 权限按最小够用原则：纯咨询用 read-only，要改项目文件用 workspace-write，仅按用户明确指示给 danger-full-access。
 
 **Agent 低成本监控（省 token）**：
-- `GET /api/last_text` — 只返回最后一条 assistant 消息的**正文 text 段** + 命令/思考段计数 + 错误概览（`n_errors` / `unresolved_errors` / `last_error`）。勿用 `/api/state` 做轮询：其 parts 含全部命令调用文本（单轮可达 3 万字符），全量拉取浪费 token。
-- **判断"在跑还是卡了"**：`last_error` 非空 = 有未恢复的错误。结合 `busy`：busy=True 且 last_error 非空 → 断线重连中（`willRetry:true`）；busy=False 且 last_error 非空 → 本轮已失败/卡死（`willRetry:false`，含 Reconnecting 1/5 合并到 5/5 的终态）。重连成功后该错误会被标记 `resolved:true` 并移出 last_error。`POST /api/stop` 也会清 busy，解开「上一轮还在进行中」。中途切分的回复 `/api/last_text` 只含最后一条 assistant（后半段），前半段在 `/api/state`。
+- `GET /api/last_text` — 只返回最后一条 assistant 消息的**正文 text 段**（错误 part 不含在 text 里）+ 命令/思考段计数 + 错误概览（`n_errors` / `unresolved_errors` / `last_error` / `errors`）。勿用 `/api/state` 做轮询：其 parts 含全部命令调用文本（单轮可达 3 万字符），全量拉取浪费 token。
+- **判断"在跑还是卡了"**：`last_error` 非空 = 终态错误（最后一条消息以错误 part 收尾，或无轮次错误条目在时间线末尾）。结合 `busy`：busy=True 且 last_error 非空 → 断线重连中（`willRetry:true`）；busy=False 且 last_error 非空 → 本轮已失败/卡死（`willRetry:false`，含 Reconnecting 1/5 合并到 5/5 的终态）。错误**位置化、无状态**：重连恢复后（错误 part 后面还有正文）last_error 自动为空；新轮次开始后旧错误自动不算是"当前问题"，无需任何标记。`POST /api/stop` 也会清 busy，解开「上一轮还在进行中」。中途切分（重连恢复）的回复在 `last_text` 里是完整两段（`\n` 拼接），不再丢前半段。
 - `GET /api/wait_turn?timeout=1800` — 长轮询，阻塞到当前轮完成（busy True→False）或超时才返回。用法：`POST /api/send` 后以后台 Bash（run_in_background）挂起 `curl --max-time <timeout+60>` 调它，完成即收到任务通知，替代盲目轮询。
 - 长任务的进度细节：让执行者维护 STATUS.md（磁盘文件），Agent 读它而不是读消息流。
 
-**报错可见性**：断线重连、turn/start 失败等错误会以 `role:"error"` 条目插入消息时间线（网页上按真实位置显示、可刷新恢复，不再沉底），并持久化进 `state.json`。`GET /api/state` 的 `messages` 里同样能看到，字段：`message` / `additionalDetails` / `willRetry` / `turnId` / `resolved` / `raw`。`resolved:true` = 该轮已正常收尾（重连成功）；同一次重连的多条进度（Reconnecting 1/5 → 2/5）合并为一条实时更新。
+**报错可见性**：断线重连、turn/start 失败等错误以 **assistant 消息 parts 里的 `type:"error"` 段**落在回复正文的真实位置（顺序即位置：`[正文前半段] [⚠ 错误] [正文后半段]`，无需拆消息/续接），网页上渲染为红字+框，持久化进 `state.json`。字段：`message` / `additionalDetails` / `willRetry` / `turnId` / `codexErrorInfo`。`last_error` 只在该消息**以错误收尾**（轮次死在错误上）时非空，消息与消息之间无错误状态需要维护——任何新错误类型到来自动可见，无需适配。同一次重连的多条进度（Reconnecting 1/5 → 2/5）合并为一条错误段更新；无轮次的错误（如 turn/start 失败、active writer）仍以 `role:"error"` 独立条目显示。
 
 **用户想开新话题** → `curl -X POST http://127.0.0.1:8765/api/new`（网页上点「新对话」等效；加 `{"project":"路径"}` 可在项目内建）。
 

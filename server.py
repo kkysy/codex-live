@@ -83,8 +83,6 @@ class Bridge:
         self.clients = []          # SSE 订阅队列
         self.big_lock = threading.Lock()
         self.err_seq = 0
-        self.cont_seq = 0
-        self.split_map = {}   # turnId -> 断线续接消息（错误之后的"后半段"）
         self.sandbox = read_sandbox_from_config()
         # state: {current, threads:{tid:{title,project,cwd,model,effort,messages,updated}}, projects:[..]}
         self.threads = {}
@@ -106,29 +104,53 @@ class Bridge:
                 self.projects = d.get("projects", [])
                 for r in self.threads.values():
                     r["messages"] = [self._migrate_msg(m) for m in r.get("messages", [])]
-                self._reorder_errors()
+                self._migrate_errors_to_parts()
             except Exception as e:
                 print("[state] 读取失败:", e)
 
-    def _reorder_errors(self):
-        """一次性自愈：旧版本把 error 条目放在同轮 assistant 消息之前，或与后续消息交错。
-        断线实际发生在回复流式过程中，错误应紧跟同轮回复之后（历史数据无法重建精确切分点，
-        新数据由 _error_item 的 split 逻辑保证精确位置）。重建式排序：每条 error 移到
-        其 turnId 对应 assistant 消息之后；找不到对应回复则保持原位置。幂等。"""
+    def _migrate_errors_to_parts(self):
+        """一次性迁移：旧版把错误作为独立时间线条目（role=error），新格式把它们折进
+        assistant 消息的 parts（type=error part）——顺序即位置，不再需要 resolved/重排/
+        续接消息等状态机制。找不到对应 assistant 消息的带 turnId 错误（旧版"错误先于
+        任何内容"时丢弃空壳、独立成条目）在条目原位新建一条仅含错误 part 的 assistant
+        消息，与新版运行行为一致；无 turnId 的（turn/start 失败等）保留独立条目。
+        幂等：目标消息里已有同 turnId 的 error part 时改为合并更新。"""
         for r in self.threads.values():
             src = r.get("messages", [])
+            by_turn = {}
+            for m in src:
+                if m.get("role") == "assistant":
+                    mid = str(m.get("id") or "")
+                    if mid and mid not in by_turn:
+                        by_turn[mid] = m
+
+            def to_part(it):
+                raw = it.get("raw") if isinstance(it.get("raw"), dict) else None
+                return {"type": "error", "message": it.get("message"),
+                        "additionalDetails": it.get("additionalDetails"),
+                        "willRetry": bool(it.get("willRetry")), "turnId": it.get("turnId"),
+                        "codexErrorInfo": (raw.get("error") or {}).get("codexErrorInfo")
+                        if raw else None}
+
             out = []
             for m in src:
                 if m.get("role") == "error" and m.get("turnId"):
-                    pos = None
-                    for k in range(len(out) - 1, -1, -1):
-                        if out[k].get("role") == "assistant" and out[k].get("id") == m.get("turnId"):
-                            pos = k
-                            break
-                    if pos is None:
-                        out.append(m)
+                    tid = m.get("turnId")
+                    target = by_turn.get(tid)
+                    if target is None:
+                        # 错误先于任何内容：原位建一条仅含错误 part 的 assistant 消息
+                        nm = {"id": tid, "role": "assistant", "parts": [to_part(m)],
+                              "streaming": False, "ts": m.get("ts") or now_s()}
+                        by_turn[tid] = nm
+                        out.append(nm)
                     else:
-                        out.insert(pos + 1, m)
+                        parts = target.setdefault("parts", [])
+                        existing = next((p for p in parts
+                                         if p.get("type") == "error" and p.get("turnId") == tid), None)
+                        if existing is not None:
+                            existing.update(to_part(m))
+                        else:
+                            parts.append(to_part(m))
                 else:
                     out.append(m)
             r["messages"] = out
@@ -183,27 +205,48 @@ class Bridge:
             except queue.Full:
                 pass
 
+    def _err_summary(self, e):
+        """错误 part / 无轮次错误条目 → 对外摘要（保持旧 last_error 的核心字段）"""
+        raw = e.get("raw") if isinstance(e.get("raw"), dict) else None
+        cei = e.get("codexErrorInfo")
+        if cei is None and raw:
+            cei = (raw.get("error") or {}).get("codexErrorInfo")
+        return {"message": e.get("message"), "additionalDetails": e.get("additionalDetails"),
+                "willRetry": e.get("willRetry"), "turnId": e.get("turnId"),
+                "codexErrorInfo": cei}
+
     def last_text(self):
-        """轻量监控端点：只返回最后一条 assistant 消息的正文 text 段，
-        命令/思考段只给计数不给内容（命令文本单轮可达 3 万字符，全量拉取浪费 token）。
-        另附错误概览：last_error 非空 = 有未恢复的错误（结合 busy 判断在重连还是已死）。"""
+        """轻量监控端点：只返回最后一条 assistant 消息的正文 text 段（错误 part 不含在
+        text 里，避免重连噪音混入正文），命令/思考段只给计数不给内容（命令文本单轮可达
+        3 万字符，全量拉取浪费 token）。
+        错误概览（位置化，无状态）：errors = 最后一条 assistant 消息里的全部错误 part；
+        last_error = 仅当最后一条消息的**末尾 part 是错误**（终态错误：轮次死在错误上），
+        或无轮次错误条目是时间线最后一条；非空结合 busy 判断在重连（willRetry:true）
+        还是已死（willRetry:false）。"""
         reg = self._reg(self.thread_id) if self.thread_id else {}
         messages = reg.get("messages", [])
         assistants = [m for m in messages if m.get("role") == "assistant"]
-        errors = [m for m in messages if m.get("role") == "error"]
-        unresolved = [m for m in errors if not m.get("resolved")]
-        last_err = unresolved[-1] if unresolved else None
-        err_info = {
-            "n_errors": len(errors),
-            "unresolved_errors": len(unresolved),
-            "last_error": self._public(last_err) if last_err else None,
-        }
         if not assistants:
+            # 无 assistant 内容：末尾无轮次错误条目（turn/start 失败等）仍需暴露
+            last_err = messages[-1] if messages and messages[-1].get("role") == "error" else None
+            errs = [last_err] if last_err else []
             return {"ok": True, "text": "", "n_commands": 0, "n_thoughts": 0,
                     "streaming": False, "busy": self.busy, "threadId": self.thread_id,
-                    **err_info}
+                    "n_errors": len(errs), "unresolved_errors": 1 if last_err else 0,
+                    "last_error": self._err_summary(last_err) if last_err else None,
+                    "errors": [self._err_summary(e) for e in errs]}
         m = self._migrate_msg(assistants[-1])
         parts = m.get("parts", [])
+        errs = [p for p in parts if p.get("type") == "error"]
+        # 终态错误 = 最后一条 assistant 消息以错误 part 收尾；或时间线末尾是无轮次错误条目
+        last_err = None
+        if parts and parts[-1].get("type") == "error":
+            last_err = parts[-1]
+        elif messages and messages[-1].get("role") == "error":
+            last_err = messages[-1]
+        err_list = list(errs)
+        if last_err and last_err.get("role") == "error" and last_err not in err_list:
+            err_list.append(last_err)
         return {
             "ok": True,
             "text": "\n".join(p.get("text", "") for p in parts if p.get("type") == "text"),
@@ -212,7 +255,10 @@ class Bridge:
             "streaming": bool(m.get("streaming")),
             "busy": self.busy,
             "threadId": self.thread_id,
-            **err_info,
+            "n_errors": len(err_list),
+            "unresolved_errors": 1 if last_err else 0,
+            "last_error": self._err_summary(last_err) if last_err else None,
+            "errors": [self._err_summary(e) for e in err_list],
         }
 
     def snapshot(self):
@@ -371,27 +417,15 @@ class Bridge:
     def _hist(self):
         return self._reg(self.thread_id).setdefault("messages", [])
 
-    def _turn_msg(self, turn_id, emit=True):
+    def _turn_msg(self, turn_id, emit=False):
         """一轮回复聚合成一条消息（delta 与 item 的 itemId 可能不同，以 turnId 为键）。
-        内容按到达顺序存入 parts（text/thought/search/command），保证工具调用出现在真实位置。
-        断线被错误切开时（split），前半段已收尾，后续内容进独立的续接消息（id 带 -c 后缀），
-        排在错误之后，使错误落在其真实发生的位置。
+        内容按到达顺序存入 parts（text/thought/search/command/error）：错误 part 落在
+        其真实发生的位置，重连恢复后的后续内容继续跟在后面——顺序即位置，无需拆消息、
+        无需续接（-c）消息。
         emit=False 用于占位：空消息不推给前端，避免留下空的闪烁光标节点"""
         hist = self._hist()
-        cont = self.split_map.get(turn_id)
-        if cont is not None:
-            return cont
         for m in hist:
             if m.get("id") == turn_id:
-                if m.get("split"):
-                    self.cont_seq += 1
-                    cont = {"id": f"{turn_id}-c{self.cont_seq}", "role": "assistant",
-                            "parts": [], "streaming": True, "ts": now_s(), "cont": True}
-                    hist.append(cont)
-                    self.split_map[turn_id] = cont
-                    if emit:
-                        self.emit({"type": "item", "item": self._public(cont)})
-                    return cont
                 return m
         m = {"id": turn_id, "role": "assistant", "parts": [], "streaming": True, "ts": now_s()}
         hist.append(m)
@@ -400,10 +434,12 @@ class Bridge:
         return m
 
     def _error_item(self, payload, tid=None):
-        """把 error 通知/异常落成时间线条目（role=error），严格按到达顺序插进历史：
-        重连类错误（Reconnecting 1/5 → 2/5 …）按 turnId 合并成一条实时更新，
-        这样断线重连不会刷出一屏报错，agent 在 /api/state、/api/last_text 也能看到错误。
-        致命错误（willRetry=False 且带 turnId）同时清 busy，让 wait_turn 能返回，避免误判为"还在跑"。"""
+        """把 error 通知/异常落进时间线：带 turnId 的错误折进该轮 assistant 消息的
+        parts（type=error），顺序即位置——断线发生在流式过程中时，错误红框落在已流出
+        内容之后，若重连成功，后续内容继续排在后面；同轮重连进度（Reconnecting 1/5
+        → 2/5）合并更新最后一条错误 part，不刷屏。致命错误（willRetry=False 且带
+        turnId）同时清 busy，让 wait_turn 能返回，避免误判为"还在跑"。
+        无 turnId 的错误（turn/start 失败等）保留为独立时间线条目（role=error）。"""
         tid = tid or self.thread_id
         if not tid:
             self.emit({"type": "error", "message": str(payload)})
@@ -412,47 +448,31 @@ class Bridge:
         err = payload.get("error") or {}
         message = err.get("message") or payload.get("message") or str(payload)
         turn_id = payload.get("turnId")
+        will_retry = bool(payload.get("willRetry"))
+        additional = err.get("additionalDetails")
         hist = reg.setdefault("messages", [])
         if turn_id:
-            for m in reversed(hist):
-                if m.get("role") == "error" and m.get("turnId") == turn_id:
-                    m.update({
-                        "message": message,
-                        "additionalDetails": err.get("additionalDetails") or m.get("additionalDetails"),
-                        "willRetry": bool(payload.get("willRetry", m.get("willRetry"))),
-                        "raw": payload,
-                        "ts": now_s(),
-                    })
-                    reg["updated"] = time.time()
-                    self._save_state()
-                    self.emit({"type": "item", "item": self._public(m)})
-                    self._maybe_fail_turn(payload)
-                    return m
+            m = self._turn_msg(turn_id, emit=False)
+            parts = m.setdefault("parts", [])
+            ep = {"type": "error", "message": message, "additionalDetails": additional,
+                  "willRetry": will_retry, "turnId": turn_id,
+                  "codexErrorInfo": err.get("codexErrorInfo")}
+            if parts and parts[-1].get("type") == "error" and parts[-1].get("turnId") == turn_id:
+                parts[-1].update(ep)          # 同轮重连进度合并
+            else:
+                parts.append(ep)
+            reg["updated"] = time.time()
+            self._save_state()
+            self.emit({"type": "item", "item": self._public(m)})
+            self._maybe_fail_turn(payload)
+            return m
         self.err_seq += 1
         m = {"id": f"e{int(time.time()*1000)}-{self.err_seq}", "role": "error", "streaming": False,
              "ts": now_s(), "message": message,
-             "additionalDetails": err.get("additionalDetails"),
-             "willRetry": bool(payload.get("willRetry")),
-             "turnId": turn_id, "resolved": False, "raw": payload}
-        if turn_id:
-            # 断线发生在该轮流式过程中：把已流出的内容收尾成"前半段"，错误插在其后，
-            # 之后的内容进续接消息 —— 错误落在真实发生的位置（消息1 - 前半段 - 报错 - 后半段），
-            # 而不是夹在用户消息和整条回复之间，也不是沉在回复之后。
-            for i, x in enumerate(hist):
-                if x.get("id") == turn_id and x.get("role") == "assistant" and x.get("streaming"):
-                    if not any((pp.get("text") or pp.get("query")) for pp in x.get("parts", [])):
-                        hist.pop(i)          # 前半段无内容：直接丢弃空壳，错误紧贴用户消息
-                        hist.insert(i, m)
-                    else:
-                        x["streaming"] = False
-                        x["split"] = True
-                        hist.insert(i + 1, m)
-                        self.emit({"type": "item", "item": self._public(x)})
-                    break
-            else:
-                hist.append(m)               # 回复已完成或尚未开始：错误排在其后
-        else:
-            hist.append(m)
+             "additionalDetails": additional,
+             "willRetry": will_retry,
+             "turnId": None, "raw": payload}
+        hist.append(m)
         reg["updated"] = time.time()
         self._save_state()
         self.emit({"type": "item", "item": self._public(m)})
@@ -472,30 +492,9 @@ class Bridge:
                 if m.get("streaming"):
                     m["streaming"] = False
                     self.emit({"type": "item", "item": self._public(m)})
-            if turn_id:
-                self.split_map.pop(turn_id, None)
-            else:
-                self.split_map.clear()
             self._save_state()
         self.busy = False
         self.emit({"type": "status", "busy": False})
-
-    def _resolve_errors(self, p):
-        """本轮正常收尾（turn/completed）时，把对应 error 条目标记为已恢复：
-        重连成功、重试后完成的不再算"未解决"；真正失败/卡住的轮次不会走到这里。"""
-        turn_obj = p.get("turn") or {}
-        turn_id = turn_obj.get("id") or p.get("turnId")
-        changed = False
-        for m in self._hist():
-            if m.get("role") != "error" or m.get("resolved"):
-                continue
-            if turn_id and m.get("turnId") and m.get("turnId") != turn_id:
-                continue
-            m["resolved"] = True
-            changed = True
-            self.emit({"type": "item", "item": self._public(m)})
-        if changed:
-            self._save_state()
 
     def _on_notification(self, method, p):
         if method == "thread/started":
@@ -533,10 +532,9 @@ class Bridge:
             m = self._turn_msg(p.get("turnId") or item.get("id"), emit=False)
             if it in ("agentMessage", "agent_message"):
                 # delta 已按序积累正文；仅在完全没收到 delta 时用整段文本兜底
-                # （续接消息除外：它只该有后半段内容，整段文本会与前半段重复）
                 joined = "".join(pp["text"] for pp in m["parts"] if pp["type"] == "text")
                 full = item.get("text", "")
-                if full and not joined and not m.get("cont"):
+                if full and not joined:
                     m["parts"].insert(0, {"type": "text", "text": full})
                 m["streaming"] = False
                 self.emit({"type": "item", "item": self._public(m)})
@@ -561,15 +559,13 @@ class Bridge:
             for m in list(self._hist()):
                 if m.get("streaming"):
                     m["streaming"] = False
-                    has_content = any((pp.get("text") or pp.get("query")) for pp in m.get("parts", []))
+                    has_content = any((pp.get("text") or pp.get("query") or pp.get("type") == "error")
+                                      for pp in m.get("parts", []))
                     if m["role"] == "assistant" and not has_content:
                         self._hist().remove(m)
                         self.emit({"type": "remove", "id": m["id"]})
                     else:
                         self.emit({"type": "item", "item": self._public(m)})
-            turn_obj = p.get("turn") or {}
-            self.split_map.pop(turn_obj.get("id") or p.get("turnId"), None)
-            self._resolve_errors(p)
             self._reg(self.thread_id)["updated"] = time.time()
             self._save_state()
             self.emit({"type": "turn_completed",

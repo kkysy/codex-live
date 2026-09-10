@@ -67,11 +67,10 @@ function partsOf(m) {
 }
 
 function errorNode(m) {
-  // 时间线条目（role=error）与客户端错误兜底共用；resolved = 该轮已正常收尾（重连成功）
+  // 时间线条目（role=error）：无轮次错误（turn/start 失败等）或迁移前的旧条目。
+  // 带轮次的错误已折进 assistant 消息的 error part（见 renderMsg），不在这里渲染。
   const box = el("div", "err");
-  if (m.resolved) box.classList.add("resolved");
-  const prefix = m.resolved ? "✓ " : (m.willRetry ? "⟳ " : "⚠ ");
-  box.appendChild(el("div", "err-head", escapeText(prefix + (m.message || "未知错误"))));
+  box.appendChild(el("div", "err-head", escapeText("⚠ " + (m.message || "未知错误"))));
   if (m.additionalDetails) {
     const d = el("div", "err-detail");
     d.textContent = m.additionalDetails;
@@ -146,6 +145,17 @@ function renderMsg(m) {
         pre.textContent = full;
         det.appendChild(pre);
         body.appendChild(det);
+      } else if (p.type === "error") {
+        // 错误 part：落在回复正文的真实位置（顺序即位置），红字+框显示；
+        // 所有错误类型共用一个渲染，无需按类型适配
+        const eb = el("div", "err part");
+        eb.appendChild(el("div", "err-head", `⚠ ${escapeText(p.message || "未知错误")}`));
+        if (p.additionalDetails) {
+          const d = el("div", "err-detail");
+          d.textContent = p.additionalDetails;
+          eb.appendChild(d);
+        }
+        body.appendChild(eb);
       }
     }
   }
