@@ -203,6 +203,8 @@ export function renderMarkdown(src) {
     let inUl = false;
     let inOl = false;
     let inTable = false;
+    let listOpenPos = -1;
+    let listLoose = false;
     const closeLists = () => {
       if (inUl) {
         html += "</ul>";
@@ -212,6 +214,8 @@ export function renderMarkdown(src) {
         html += "</ol>";
         inOl = false;
       }
+      listOpenPos = -1;
+      listLoose = false;
     };
     const closeTable = () => {
       if (inTable) {
@@ -252,14 +256,17 @@ export function renderMarkdown(src) {
       if (!t) {
         // Loose lists (blank lines between items) must stay open: closing and
         // reopening splits one ordered list into several single-item <ol>s,
-        // each restarting its numbering at 1. A blank line inside a list
-        // becomes a small spacer item; a blank line outside any list (or one
-        // followed by a different block) still closes the list as before.
+        // each restarting its numbering at 1. Keep the list open and mark it
+        // loose so CSS adds item spacing; spacer <li>s are avoided because
+        // every <li> inside an <ol> consumes a number.
         let j = lineIndex + 1;
         while (j < lines.length && !lines[j].trim()) j++;
         const nxt = j < lines.length ? lines[j].trim() : "";
         if ((inUl && /^[-*]\s+/.test(nxt)) || (inOl && /^\d+\.\s+/.test(nxt))) {
-          html += '<li class="loose-space" aria-hidden="true"></li>';
+          if (!listLoose && listOpenPos >= 0) {
+            html = html.slice(0, listOpenPos + 3) + ' class="loose"' + html.slice(listOpenPos + 3);
+            listLoose = true;
+          }
           continue;
         }
         closeLists();
@@ -295,6 +302,7 @@ export function renderMarkdown(src) {
       if (/^[-*]\s+/.test(t)) {
         if (!inUl) {
           closeLists();
+          listOpenPos = html.length;
           html += "<ul>";
           inUl = true;
         }
@@ -304,6 +312,7 @@ export function renderMarkdown(src) {
       if (/^\d+\.\s+/.test(t)) {
         if (!inOl) {
           closeLists();
+          listOpenPos = html.length;
           html += "<ol>";
           inOl = true;
         }

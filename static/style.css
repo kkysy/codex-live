@@ -482,9 +482,9 @@ html[data-theme="dark"] .round-btn.stop { background: #f2f0ec; color: #171614; }
   color: var(--muted);
 }
 
-/* Loose-list spacer: keeps visual separation between items of a list that
-   stayed open across blank lines (ordered lists must not restart at 1). */
-.loose-space {
-  list-style: none;
-  height: 0.55em;
+/* Loose lists keep a single <ol>/<ul> across blank lines; spacing between
+   items comes from this rule instead of spacer <li>s (which would consume
+   ordered-list numbers). */
+.loose li + li {
+  margin-top: 0.55em;
 }
