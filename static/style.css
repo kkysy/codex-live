@@ -481,3 +481,10 @@ html[data-theme="dark"] .round-btn.stop { background: #f2f0ec; color: #171614; }
   font-size: 11.5px;
   color: var(--muted);
 }
+
+/* Loose-list spacer: keeps visual separation between items of a list that
+   stayed open across blank lines (ordered lists must not restart at 1). */
+.loose-space {
+  list-style: none;
+  height: 0.55em;
+}

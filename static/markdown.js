@@ -250,6 +250,18 @@ export function renderMarkdown(src) {
       }
       const t = line.trim();
       if (!t) {
+        // Loose lists (blank lines between items) must stay open: closing and
+        // reopening splits one ordered list into several single-item <ol>s,
+        // each restarting its numbering at 1. A blank line inside a list
+        // becomes a small spacer item; a blank line outside any list (or one
+        // followed by a different block) still closes the list as before.
+        let j = lineIndex + 1;
+        while (j < lines.length && !lines[j].trim()) j++;
+        const nxt = j < lines.length ? lines[j].trim() : "";
+        if ((inUl && /^[-*]\s+/.test(nxt)) || (inOl && /^\d+\.\s+/.test(nxt))) {
+          html += '<li class="loose-space" aria-hidden="true"></li>';
+          continue;
+        }
         closeLists();
         closeTable();
         continue;
