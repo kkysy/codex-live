@@ -268,7 +268,7 @@ class Bridge:
             "threadId": self.thread_id,
             "title": reg.get("title", "新对话"),
             "busy": self.busy,
-            "model": reg.get("model") or "gpt-5.6-luna",
+            "model": reg.get("model") or "gpt-6-luna",
             "effort": reg.get("effort") or "high",
             "sandbox": sandbox,
             "sandboxLabel": SANDBOX_LABELS.get(sandbox, sandbox),
