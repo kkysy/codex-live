@@ -488,3 +488,8 @@ html[data-theme="dark"] .round-btn.stop { background: #f2f0ec; color: #171614; }
 .loose li + li {
   margin-top: 0.55em;
 }
+/* Sub-paragraphs of a list item stay inside that <li>; keep the paragraph
+   rhythm but drop the first margin so an item still reads as one unit. */
+.body li > p {
+  margin: 0.35em 0 0;
+}

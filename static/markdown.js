@@ -200,22 +200,18 @@ export function renderMarkdown(src) {
     }
     const lines = chunk.split("\n");
     let html = "";
-    let inUl = false;
-    let inOl = false;
+    let stack = [];
     let inTable = false;
-    let listOpenPos = -1;
-    let listLoose = false;
+    // Each open list level carries its own "an item is open" flag, because a
+    // nested list lives inside its parent's <li>: several <li>s can be open at
+    // the same time and must be closed in the right order.
+    const popLevel = () => {
+      const lv = stack.pop();
+      if (lv.itemOpen) html += "</li>";
+      html += lv.tag === "ul" ? "</ul>" : "</ol>";
+    };
     const closeLists = () => {
-      if (inUl) {
-        html += "</ul>";
-        inUl = false;
-      }
-      if (inOl) {
-        html += "</ol>";
-        inOl = false;
-      }
-      listOpenPos = -1;
-      listLoose = false;
+      while (stack.length) popLevel();
     };
     const closeTable = () => {
       if (inTable) {
@@ -223,33 +219,92 @@ export function renderMarkdown(src) {
         inTable = false;
       }
     };
-    const renderIndentedCode = (codeLines) => {
-      const code = codeLines.map((line) => line.replace(/^(?: {4}|\t)/, "")).join("\n").replace(/\n$/, "");
+    // Leading whitespace in columns; a tab counts as four.
+    const indentOf = (line) => {
+      let n = 0;
+      for (const c of line) {
+        if (c === " ") n += 1;
+        else if (c === "\t") n += 4;
+        else break;
+      }
+      return n;
+    };
+    // A list item marker at the current indentation, if any. ChatGPT numbers its
+    // lists but writes every item's sub-paragraph (and any nested list) indented
+    // by a couple of spaces, so a line only counts as a new item when its marker
+    // sits at its own level's column.
+    const markerAt = (line) => {
+      const indent = indentOf(line);
+      const t = line.trim();
+      if (/^[-*]\s+/.test(t)) return { indent, tag: "ul", width: indent + 2, text: t.replace(/^[-*]\s+/, "") };
+      const m = t.match(/^(\d+)\.\s+(.*)$/s);
+      if (m) return { indent, tag: "ol", width: indent + m[1].length + 2, text: m[2] };
+      return null;
+    };
+    const blockStarter = (t) =>
+      /^#{1,6}\s+/.test(t) ||
+      (t.startsWith("|") && t.endsWith("|")) ||
+      /^\u0000M\d+\u0000$/.test(t) ||
+      /^>\s+/.test(t);
+    const renderIndentedCode = (codeLines, base) => {
+      const dedent = new RegExp(`^ {1,${base + 4}}`);
+      const code = codeLines
+        .map((line) => line.replace(dedent, ""))
+        .join("\n")
+        .replace(/\n$/, "");
       html += `<pre class="code"><code>${escapeHtml(code)}</code></pre>`;
+    };
+    const openList = (m) => {
+      const tag = m.tag === "ul" ? "<ul>" : "<ol>";
+      stack.push({
+        tag: m.tag,
+        indent: m.indent,
+        width: m.width,
+        openPos: html.length,
+        loose: false,
+        itemOpen: false
+      });
+      html += tag;
+    };
+    // The open level a marker of this type belongs to, or -1. Ideally a marker
+    // sits exactly at its level's column, but ChatGPT indents the first item of
+    // a list more often than the rest, so a level up to three columns to the
+    // right of the marker still belongs to the same list. The shallowest match
+    // wins, so a marker back at the list's own column returns to the outer list
+    // instead of staying inside a nested one.
+    const joinIndex = (indent, tag) => {
+      for (let k = 0; k < stack.length; k++) {
+        if (stack[k].tag !== tag) continue;
+        if (indent <= stack[k].indent && stack[k].indent <= indent + 3) return k;
+      }
+      return -1;
     };
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
       const line = lines[lineIndex];
-      // Markdown's four-space / tab code blocks are grouped before trimming so
-      // indentation is not mistaken for ordinary paragraph whitespace.
-      if (/^(?: {4}|\t)/.test(line)) {
+      // Indentation is measured against the enclosing list item's content column
+      // ("10. " is four columns, "1. " only three), so a continuation paragraph
+      // indented to its marker is not mistaken for a four-space code block.
+      const base = stack.length ? stack[stack.length - 1].width : 0;
+      const lineIndent = indentOf(line);
+      if (lineIndent - base >= 4) {
         closeLists();
         closeTable();
         const codeLines = [line];
         while (lineIndex + 1 < lines.length) {
           const next = lines[lineIndex + 1];
-          if (/^(?: {4}|\t)/.test(next)) {
+          if (indentOf(next) - base >= 4) {
             codeLines.push(next);
             lineIndex++;
             continue;
           }
-          if (!next.trim() && lineIndex + 2 < lines.length && /^(?: {4}|\t)/.test(lines[lineIndex + 2])) {
+          if (!next.trim() && lineIndex + 2 < lines.length && indentOf(lines[lineIndex + 2]) - base >= 4) {
             codeLines.push(next);
             lineIndex++;
             continue;
           }
           break;
         }
-        renderIndentedCode(codeLines);
+        renderIndentedCode(codeLines, base);
         continue;
       }
       const t = line.trim();
@@ -261,11 +316,27 @@ export function renderMarkdown(src) {
         // every <li> inside an <ol> consumes a number.
         let j = lineIndex + 1;
         while (j < lines.length && !lines[j].trim()) j++;
-        const nxt = j < lines.length ? lines[j].trim() : "";
-        if ((inUl && /^[-*]\s+/.test(nxt)) || (inOl && /^\d+\.\s+/.test(nxt))) {
-          if (!listLoose && listOpenPos >= 0) {
-            html = html.slice(0, listOpenPos + 3) + ' class="loose"' + html.slice(listOpenPos + 3);
-            listLoose = true;
+        const nxtMarker = j < lines.length ? markerAt(lines[j]) : null;
+        const nxtIndent = j < lines.length ? indentOf(lines[j]) : -1;
+        // The list continues if the next non-blank line is a marker of some open
+        // level (or a deeper nested one), or an indented line belonging to the
+        // outermost list's current item.
+        const outer = stack[0];
+        const continues =
+          (nxtMarker &&
+            (joinIndex(nxtMarker.indent, nxtMarker.tag) >= 0 ||
+              (outer && nxtMarker.indent > outer.indent))) ||
+          (!nxtMarker && outer && nxtIndent > outer.indent);
+        if (continues) {
+          // Deepest level was pushed last, so inserting from the top of the
+          // stack keeps the shallower levels' recorded positions valid.
+          for (let k = stack.length - 1; k >= 0; k--) {
+            const lv = stack[k];
+            if (!lv.loose && lv.openPos >= 0) {
+              html =
+                html.slice(0, lv.openPos + 3) + ' class="loose"' + html.slice(lv.openPos + 3);
+              lv.loose = true;
+            }
           }
           continue;
         }
@@ -273,7 +344,42 @@ export function renderMarkdown(src) {
         closeTable();
         continue;
       }
+      const m = markerAt(line);
+      if (m) {
+        // A marker leaves a level only when it sits four or more columns to the
+        // left of that level's own marker — a Markdown-code-block-sized step.
+        // Steps of one to three columns are just sloppy indentation of the same
+        // list (ChatGPT often indents only its first item), and must not split
+        // one ordered list into several single-item lists.
+        while (stack.length && m.indent + 4 <= stack[stack.length - 1].indent) popLevel();
+        const idx = joinIndex(m.indent, m.tag);
+        if (idx < 0) {
+          // No open level this marker belongs to: it is either a nested list
+          // inside the item still open above, or a list of its own.
+          const parent = stack[stack.length - 1];
+          if (parent && m.indent > parent.indent) {
+            openList(m);
+          } else {
+            closeLists();
+            openList(m);
+          }
+          html += `<li>${inline(m.text)}`;
+          stack[stack.length - 1].itemOpen = true;
+          continue;
+        }
+        while (stack.length > idx + 1) popLevel();
+        if (stack[idx].itemOpen) html += "</li>";
+        html += `<li>${inline(m.text)}`;
+        stack[idx].itemOpen = true;
+        continue;
+      }
       if (/^\u0000M\d+\u0000$/.test(t)) {
+        if (stack.length && lineIndent > 0) {
+          // Display math inside a list item belongs to that item; closing the
+          // list here would split one ordered list into single-item <ol>s.
+          html += t;
+          continue;
+        }
         closeLists();
         closeTable();
         html += t;
@@ -299,29 +405,19 @@ export function renderMarkdown(src) {
         html += `<h${n}>${inline(h[2])}</h${n}>`;
         continue;
       }
-      if (/^[-*]\s+/.test(t)) {
-        if (!inUl) {
-          closeLists();
-          listOpenPos = html.length;
-          html += "<ul>";
-          inUl = true;
-        }
-        html += `<li>${inline(t.replace(/^[-*]\s+/, ""))}</li>`;
-        continue;
-      }
-      if (/^\d+\.\s+/.test(t)) {
-        if (!inOl) {
-          closeLists();
-          listOpenPos = html.length;
-          html += "<ol>";
-          inOl = true;
-        }
-        html += `<li>${inline(t.replace(/^\d+\.\s+/, ""))}</li>`;
-        continue;
-      }
       if (/^>\s+/.test(t)) {
         closeLists();
         html += `<blockquote>${inline(t.replace(/^>\s+/, ""))}</blockquote>`;
+        continue;
+      }
+      // An indented line while a list is open is that item's continuation:
+      // emitting it as a top-level paragraph would close the list and split one
+      // ordered list into single-item <ol>s, restarting the numbering at 1.
+      if (stack.length && lineIndent > 0 && !blockStarter(t)) {
+        // Leave nested levels whose content column this line does not reach, so
+        // the paragraph lands in the item it visually belongs to.
+        while (stack.length > 1 && lineIndent < stack[stack.length - 1].width) popLevel();
+        html += `<p>${inline(t)}</p>`;
         continue;
       }
       closeLists();
