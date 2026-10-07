@@ -80,6 +80,7 @@ class Bridge:
         self.pending = {}          # rpc_id -> queue.Queue
         self.thread_id = None
         self.busy = False
+        self.active_turn_id = None  # 当前轮次 id（turn/started / delta 到达时更新），中断要用
         self.clients = []          # SSE 订阅队列
         self.big_lock = threading.Lock()
         self.err_seq = 0
@@ -500,6 +501,7 @@ class Bridge:
                     self.emit({"type": "item", "item": self._public(m)})
             self._save_state()
         self.busy = False
+        self.active_turn_id = None
         self.emit({"type": "status", "busy": False})
 
     def _on_notification(self, method, p):
@@ -512,6 +514,10 @@ class Bridge:
                 reg["cwd"] = th.get("cwd") or reg.get("cwd")
                 reg["name"] = th.get("name") or reg.get("title")
                 self._save_state()
+        elif method == "turn/started":
+            # app-server 0.159.2 起中断必须带 turnId，此处先记下
+            if self.busy and (p.get("turn") or {}).get("id"):
+                self.active_turn_id = p["turn"]["id"]
         elif method == "thread/name/updated":
             tid = p.get("threadId") or self.thread_id
             if tid in self.threads:
@@ -522,6 +528,8 @@ class Bridge:
                            "title": self.threads[tid]["title"]})
         elif method == "item/agentMessage/delta":
             m = self._turn_msg(p.get("turnId") or p.get("itemId"), emit=False)
+            if self.busy and p.get("turnId"):
+                self.active_turn_id = p["turnId"]  # turn/started 漏接时的兜底
             d = p.get("delta", "")
             parts = m["parts"]
             if parts and parts[-1]["type"] == "text":
@@ -561,6 +569,7 @@ class Bridge:
                     self.emit({"type": "item", "item": self._public(m)})
         elif method == "turn/completed":
             self.busy = False
+            self.active_turn_id = None
             u = (p.get("turn", {}) or {}).get("usage") or p.get("usage") or {}
             for m in list(self._hist()):
                 if m.get("streaming"):
@@ -651,10 +660,24 @@ class Bridge:
 
     def stop(self):
         if self.thread_id:
-            try:
-                self._rpc("turn/interrupt", {"threadId": self.thread_id}, timeout=10)
-            except Exception:
-                pass
+            # app-server 0.159.2 要求 turn/interrupt 必须带 turnId，只发 threadId
+            # 会被拒绝（missing field `turnId`）且生成照常。turn/started / delta
+            # 都没接到时，流式 assistant 消息的 id 就是 turnId，作最后兜底。
+            turn_id = self.active_turn_id
+            if not turn_id and self.busy:
+                for m in reversed(self._hist()):
+                    if m.get("role") == "assistant" and m.get("streaming"):
+                        turn_id = m["id"]
+                        break
+            if turn_id:
+                try:
+                    self._rpc("turn/interrupt",
+                              {"threadId": self.thread_id, "turnId": turn_id}, timeout=10)
+                except Exception as e:
+                    print("[bridge] turn/interrupt 失败:", e)
+                    self.emit({"type": "notice", "message": f"中断请求失败: {e}"})
+            else:
+                print("[bridge] 中断时没有活跃 turnId，仅本地收尾")
         # interrupt 本身不会清 busy；五次重连失败后若协议没发 willRetry:false，
         # 也要让调用方能手动解开「上一轮还在进行中」
         if self.busy:
