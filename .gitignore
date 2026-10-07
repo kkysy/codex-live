@@ -5,3 +5,6 @@ server.log
 __pycache__/
 sse_debug*.txt
 sse_test.txt
+
+# 09-23 误删线程的恢复现场（85MB+ 数据库副本与 carving 脚本），不入库
+_recovery/
