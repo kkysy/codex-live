@@ -360,9 +360,15 @@ class Bridge:
                 try:
                     self._resume(self.thread_id)
                 except Exception as e:
-                    print("[bridge] 续接失败，开新线程:", e)
-                    self.thread_id = None
-                    self._open_thread()
+                    # 归档会话（rollout 已丢、只剩本地记录）：停留在该会话供查看
+                    if self.threads.get(self.thread_id, {}).get("archive_only"):
+                        print("[bridge] 归档会话，仅本地记录:", self.thread_id)
+                        self.emit({"type": "notice", "message": "该会话的原始会话文件已丢失，仅保留本地聊天记录，无法继续对话"})
+                        self.emit({"type": "snapshot", **self.snapshot()})
+                    else:
+                        print("[bridge] 续接失败，开新线程:", e)
+                        self.thread_id = None
+                        self._open_thread()
 
     def _load_projects(self):
         try:
@@ -690,6 +696,14 @@ class Bridge:
                 self._resume(tid)
             except RuntimeError as e:
                 if "no rollout" in str(e):
+                    # 归档会话（rollout 已丢失、只剩本地聊天记录）：保留列表供查看，不再移除
+                    if self.threads.get(tid, {}).get("archive_only"):
+                        self.thread_id = tid
+                        self._reg(tid)["updated"] = time.time()
+                        self._save_state()
+                        self.emit({"type": "notice", "message": "该会话的原始会话文件已丢失，仅保留本地聊天记录，无法继续对话"})
+                        self.emit({"type": "snapshot", **self.snapshot()})
+                        return True, "ok"
                     self.threads.pop(tid, None)
                     self._save_state()
                     self.emit({"type": "snapshot", **self.snapshot()})
