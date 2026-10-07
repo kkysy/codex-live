@@ -782,6 +782,8 @@ class Handler(BaseHTTPRequestHandler):
             self._file(STATIC / "markdown.js", "text/javascript")
         elif path.startswith("/katex/"):
             self._katex_file(path)
+        elif path.startswith("/vendor/"):
+            self._vendor_file(path)
         else:
             self.send_error(404)
 
@@ -801,6 +803,15 @@ class Handler(BaseHTTPRequestHandler):
         if root not in target.parents or target.suffix.lower() not in self.KATEX_TYPES:
             return self.send_error(404)
         self._file(target, self.KATEX_TYPES[target.suffix.lower()])
+
+    def _vendor_file(self, path):
+        # 第三方库（markdown-it 等）与 /katex/ 同规则：只放行 js，resolve 后校验防路径穿越
+        rel = Path(path[len("/vendor/"):])
+        target = (STATIC / "vendor" / rel).resolve()
+        root = (STATIC / "vendor").resolve()
+        if root not in target.parents or target.suffix.lower() != ".js":
+            return self.send_error(404)
+        self._file(target, "text/javascript")
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))

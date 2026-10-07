@@ -482,13 +482,12 @@ html[data-theme="dark"] .round-btn.stop { background: #f2f0ec; color: #171614; }
   color: var(--muted);
 }
 
-/* Loose lists keep a single <ol>/<ul> across blank lines; spacing between
-   items comes from this rule instead of spacer <li>s (which would consume
-   ordered-list numbers). */
-.loose li + li {
+/* Loose lists (markdown-it wraps their item content in <p>) get spacing between
+   items; tight lists stay compact. */
+.body li:has(> p) + li {
   margin-top: 0.55em;
 }
-/* Sub-paragraphs of a list item stay inside that <li>; keep the paragraph
+/* Sub-paragraphs of a list item live inside that <li>; keep the paragraph
    rhythm but drop the first margin so an item still reads as one unit. */
 .body li > p {
   margin: 0.35em 0 0;
