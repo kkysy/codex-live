@@ -684,12 +684,17 @@ class Bridge:
             self._finish_failed_turn()
 
     def new_thread(self, project=None, model=None, sandbox=None, effort=None):
+        """返回 (ok, message, reason)。reason 只用于 HTTP 层区分状态码：
+        busy=上一轮未结束（409），bad_project / bad_sandbox=参数错误（400）。
+        参数错误以前也回 409，外部会误判成"回合没结束、锁卡住"。"""
         with self.big_lock:
             if self.busy:
-                return False, "上一轮还在进行中，请先停止"
+                print(f"[api] new 拒绝(busy) project={project!r}")
+                return False, "上一轮还在进行中，请先停止", "busy"
             if project:
                 if not Path(project).exists():
-                    return False, f"项目路径不存在: {project}"
+                    print(f"[api] new 拒绝(bad_project) project={project!r}")
+                    return False, f"项目路径不存在: {project}", "bad_project"
                 if project not in self.project_paths():
                     # 首次使用的目录自动登记为项目
                     self.projects.append(project)
@@ -699,21 +704,24 @@ class Bridge:
             if sandbox:
                 mode = SANDBOX_ALIASES.get(sandbox.lower().strip())
                 if not mode:
-                    return False, f"未知权限类型: {sandbox}（可用: read-only / workspace-write / danger-full-access）"
+                    print(f"[api] new 拒绝(bad_sandbox) sandbox={sandbox!r}")
+                    return False, f"未知权限类型: {sandbox}（可用: read-only / workspace-write / danger-full-access）", "bad_sandbox"
             self._ensure_proc()
             self._open_thread(project, model, effort)
             if mode:
                 self._reg(self.thread_id)["sandbox"] = mode
                 self._save_state()
             self.emit({"type": "snapshot", **self.snapshot()})
-            return True, "ok"
+            return True, "ok", None
 
     def open_thread(self, tid):
+        """返回 (ok, message, reason)；reason 只为 HTTP 状态码区分 busy / 其它失败。
+        以前"未知会话"也回 409，和"上一轮未结束"无法区分。"""
         with self.big_lock:
             if self.busy:
-                return False, "上一轮还在进行中，请先停止"
+                return False, "上一轮还在进行中，请先停止", "busy"
             if tid not in self.threads:
-                return False, "未知会话"
+                return False, "未知会话", "unknown_thread"
             self._ensure_proc()
             try:
                 self._resume(tid)
@@ -726,26 +734,26 @@ class Bridge:
                         self._save_state()
                         self.emit({"type": "notice", "message": "该会话的原始会话文件已丢失，仅保留本地聊天记录，无法继续对话"})
                         self.emit({"type": "snapshot", **self.snapshot()})
-                        return True, "ok"
+                        return True, "ok", None
                     self.threads.pop(tid, None)
                     self._save_state()
                     self.emit({"type": "snapshot", **self.snapshot()})
-                    return False, "该会话从未产生对话内容，已从列表移除"
-                return False, str(e)
+                    return False, "该会话从未产生对话内容，已从列表移除", "empty_thread"
+                return False, str(e), "resume_failed"
             self.emit({"type": "snapshot", **self.snapshot()})
-            return True, "ok"
+            return True, "ok", None
 
     def delete_thread(self, tid):
         with self.big_lock:
             if self.busy and tid == self.thread_id:
-                return False, "会话正在进行中，请先停止"
+                return False, "会话正在进行中，请先停止", "busy"
             self._ensure_proc()
             try:
                 self._rpc("thread/delete", {"threadId": tid}, timeout=20)
             except RuntimeError as e:
                 # 无 rollout 的空壳线程没有可删的远端记录，本地移除即可
                 if "no rollout" not in str(e).lower():
-                    return False, str(e)
+                    return False, str(e), "delete_failed"
             self.threads.pop(tid, None)
             if self.thread_id == tid:
                 self.thread_id = None
@@ -753,7 +761,7 @@ class Bridge:
                 self._open_thread()
             self._save_state()
             self.emit({"type": "snapshot", **self.snapshot()})
-            return True, "ok"
+            return True, "ok", None
 
     def add_project(self, path):
         path = str(path).rstrip("\\/") 
@@ -784,6 +792,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _action(self, result):
+        """(ok, msg, reason) → HTTP。只有 reason=="busy" 才是 409（上一轮未结束）；
+        参数/状态类失败一律 400，否则调用方会把"项目路径不存在"误读成"锁卡住了"。"""
+        ok, msg, reason = result
+        code = 200 if ok else (409 if reason == "busy" else 400)
+        self._json({"ok": ok, "message": msg, "reason": reason}, code)
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -855,17 +870,15 @@ class Handler(BaseHTTPRequestHandler):
             bridge.stop()
             self._json({"ok": True})
         elif self.path == "/api/new":
-            ok, msg = bridge.new_thread(body.get("project"), body.get("model"), body.get("sandbox"), body.get("effort"))
-            self._json({"ok": ok, "message": msg}, 200 if ok else 409)
+            self._action(bridge.new_thread(body.get("project"), body.get("model"),
+                                           body.get("sandbox"), body.get("effort")))
         elif self.path == "/api/open":
-            ok, msg = bridge.open_thread(body.get("threadId"))
-            self._json({"ok": ok, "message": msg}, 200 if ok else 409)
+            self._action(bridge.open_thread(body.get("threadId")))
         elif self.path == "/api/projects":
             ok, msg = bridge.add_project(body.get("path"))
             self._json({"ok": ok, "message": msg}, 200 if ok else 400)
         elif self.path == "/api/delete":
-            ok, msg = bridge.delete_thread(body.get("threadId"))
-            self._json({"ok": ok, "message": msg}, 200 if ok else 409)
+            self._action(bridge.delete_thread(body.get("threadId")))
         else:
             self.send_error(404)
 

@@ -442,9 +442,15 @@ input.addEventListener("keydown", (e) => {
 });
 btnSend.addEventListener("click", send);
 btnStop.addEventListener("click", () => fetch("/api/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }));
-btnNew.addEventListener("click", () =>
-  fetch("/api/new", { method: "POST", headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ project: state.selectedProject }) }));
+btnNew.addEventListener("click", async () => {
+  const r = await fetch("/api/new", { method: "POST", headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ project: state.selectedProject }) });
+  if (!r.ok) {
+    // 以前这里不读响应：新建失败（项目路径失效、上一轮未结束）只表现为"点了没反应"。
+    const d = await r.json().catch(() => ({}));
+    handle({ type: "error", message: d.message || `新建对话失败（HTTP ${r.status}）` });
+  }
+});
 btnAddProject.addEventListener("click", async () => {
   const path = prompt("输入项目文件夹的完整路径（如 E:\\HighEV_sampling）：");
   if (!path) return;

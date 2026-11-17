@@ -44,7 +44,7 @@
 | `/api/send` | POST `{text}` | 发送消息（409 = 上一轮进行中） |
 | `/api/last_text` | GET | 轻量监控：只返回最后一条 assistant 正文 + 工具调用计数（供 Agent 低 token 轮询） |
 | `/api/wait_turn` | GET `?timeout=1800` | 长轮询，阻塞到当前轮完成或超时（供 Agent 挂起等待而非盲轮询） |
-| `/api/new` | POST `{project?, model?, sandbox?}` | 新会话；sandbox: read-only / workspace-write / danger-full-access |
+| `/api/new` | POST `{project?, model?, sandbox?, effort?}` | 新会话；sandbox: read-only / workspace-write / danger-full-access。409 = 上一轮进行中，400 = 参数无效（项目路径不存在、sandbox 拼错），原因见响应 `message`/`reason` |
 | `/api/open` | POST `{threadId}` | 切换到指定历史会话 |
 | `/api/delete` | POST `{threadId}` | 删除会话 |
 | `/api/projects` | POST `{path}` | 手动添加项目文件夹 |

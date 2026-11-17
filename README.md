@@ -44,7 +44,7 @@ You can also use it as a companion tool for coding agents (ZCode / Claude Code /
 | `/api/send` | POST `{text}` | Send a message (409 = previous turn still running) |
 | `/api/last_text` | GET | Lightweight monitoring: last assistant text + tool-call counts only (for low-token agent polling) |
 | `/api/wait_turn` | GET `?timeout=1800` | Long-poll until the current turn finishes or times out (lets agents block instead of poll) |
-| `/api/new` | POST `{project?, model?, sandbox?}` | New thread; sandbox: `read-only` / `workspace-write` / `danger-full-access` |
+| `/api/new` | POST `{project?, model?, sandbox?, effort?}` | New thread; sandbox: `read-only` / `workspace-write` / `danger-full-access`. 409 = previous turn still running, 400 = invalid argument (missing project path, misspelled sandbox); see `message`/`reason` |
 | `/api/open` | POST `{threadId}` | Switch to a stored thread |
 | `/api/delete` | POST `{threadId}` | Delete a thread |
 | `/api/projects` | POST `{path}` | Register a project folder |
