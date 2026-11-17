@@ -8,3 +8,7 @@ sse_test.txt
 
 # 09-23 误删线程的恢复现场（85MB+ 数据库副本与 carving 脚本），不入库
 _recovery/
+
+# tests/ 下的个人排障/冒烟脚本（会打真实服务、新建/删除线程），非正式测试，不入库
+tests/procs.ps1
+tests/terra_e2e.py
